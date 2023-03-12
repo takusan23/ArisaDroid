@@ -153,9 +153,9 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
             // 静止画撮影で利用する ImageReader
             // Surface の入力から画像を生成できる
             val imageReader = ImageReader.newInstance(
-                CAMERA_RESOLTION_WIDTH,
-                CAMERA_RESOLTION_HEIGHT,
-                PixelFormat.RGBA_8888,
+                if (isLandscape) CAMERA_RESOLTION_WIDTH else CAMERA_RESOLTION_HEIGHT,
+                if (isLandscape) CAMERA_RESOLTION_HEIGHT else CAMERA_RESOLTION_WIDTH,
+                PixelFormat.RGBA_8888, // JPEG は OpenGL 使ったせいなのか利用できない
                 2
             )
             this@MainActivity.imageReader = imageReader
@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
             cameraItemList += CameraItem(this@MainActivity, frontCameraId, Surface(subSurfaceTexture[0]), Surface(subSurfaceTexture[1]))
             cameraItemList.forEach { it.openCamera() }
             // プレビューする
-            cameraItemList.forEach { it.startPreview() }
+            cameraItemList.forEach { it.startCamera() }
 
             // OpenGL のレンダリングを行う
             // ここで行う理由ですが、makeCurrent したスレッドでないと glDrawArray できない？ + onFrameAvailable が UIスレッド なので重たいことはできないためです。
@@ -253,19 +253,22 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
         lifecycleScope.launch(Dispatchers.IO) {
             // ImageReader から取り出す
             val image = imageReader?.acquireLatestImage() ?: return@launch
-            val imageBytes = image.planes?.first()?.buffer
-            val readBitmap = Bitmap.createBitmap(
-                image.width,
-                image.height,
-                Bitmap.Config.ARGB_8888
-            )
-            readBitmap.copyPixelsFromBuffer(imageBytes)
-            // 縦の場合は width と height を合わせる。しないと歪む
-            val bitmap = if (!isLandscape) {
-                val resizedBitmap = Bitmap.createScaledBitmap(readBitmap, image.height, image.width, true)
-                readBitmap.recycle()
-                resizedBitmap
-            } else readBitmap
+            val width = image.width
+            val height = image.height
+            val planes = image.planes
+            val buffer = planes[0].buffer
+            // なぜか ImageReader のサイズに加えて、何故か Padding が入っていることを考慮する必要がある
+            val pixelStride = planes[0].pixelStride
+            val rowStride = planes[0].rowStride
+            val rowPadding = rowStride - pixelStride * width
+            // Bitmap 作成
+            val readBitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
+            readBitmap.copyPixelsFromBuffer(buffer)
+            // 余分な Padding を消す
+            val originWidth = if (isLandscape) CAMERA_RESOLTION_WIDTH else CAMERA_RESOLTION_HEIGHT
+            val originHeight = if (isLandscape) CAMERA_RESOLTION_HEIGHT else CAMERA_RESOLTION_WIDTH
+            val editBitmap = Bitmap.createBitmap(readBitmap, 0, 0, originWidth, originHeight)
+            readBitmap.recycle()
             // ギャラリーに登録する
             val contentResolver = contentResolver
             val contentValues = contentValuesOf(
@@ -274,9 +277,9 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
             )
             val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues) ?: return@launch
             contentResolver.openOutputStream(uri).use { outputStream ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
+                editBitmap.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
             }
-            bitmap.recycle()
+            editBitmap.recycle()
             image.close()
         }
     }

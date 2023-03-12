@@ -36,7 +36,7 @@ class CameraItem(
     }
 
     /** カメラを開始する */
-    fun startPreview() {
+    fun startCamera() {
         val cameraDevice = cameraDevice ?: return
         val captureRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(previewSurface)
