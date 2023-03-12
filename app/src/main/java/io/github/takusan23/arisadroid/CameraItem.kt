@@ -12,11 +12,19 @@ import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
-/** 前面、背面 カメラぞれぞれを保持しておくクラス */
+/**
+ * カメラを開けたり閉じたりする処理を隠蔽するクラス
+ *
+ * @param context [Context]
+ * @param cameraId カメラID、前面 or 背面
+ * @param previewSurface プレビューSurface
+ * @param captureSurface 撮影、録画 用Surface
+ */
 class CameraItem(
     context: Context,
     private val cameraId: String,
     private val previewSurface: Surface,
+    private val captureSurface: Surface
 ) {
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val cameraExecutor = Executors.newSingleThreadExecutor()
@@ -27,14 +35,16 @@ class CameraItem(
         cameraDevice = waitOpenCamera()
     }
 
-    /** プレビューを出す */
+    /** カメラを開始する */
     fun startPreview() {
         val cameraDevice = cameraDevice ?: return
-        val captureRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+        val captureRequest = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(previewSurface)
+            addTarget(captureSurface)
         }.build()
         val outputList = buildList {
             add(OutputConfiguration(previewSurface))
+            add(OutputConfiguration(captureSurface))
         }
         SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outputList, cameraExecutor, object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(captureSession: CameraCaptureSession) {
