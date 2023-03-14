@@ -76,8 +76,7 @@ class GLSurface(
     }
 
     /**
-     * Discards all resources held by this class, notably the EGL context.  Also releases the
-     * Surface that was passed to our constructor.
+     * Discards all resources held by this class, notably the EGL context.
      */
     fun release() {
         if (mEGLDisplay != EGL14.EGL_NO_DISPLAY) {
@@ -87,7 +86,7 @@ class GLSurface(
             EGL14.eglReleaseThread()
             EGL14.eglTerminate(mEGLDisplay)
         }
-        surface.release()
+        // surface.release() // GLは破棄しない
         mEGLDisplay = EGL14.EGL_NO_DISPLAY
         mEGLContext = EGL14.EGL_NO_CONTEXT
         mEGLSurface = EGL14.EGL_NO_SURFACE
