@@ -67,8 +67,8 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
     /** 生成した [SurfaceTexture] */
     private val previewSurfaceTexture = arrayListOf<SurfaceTexture>()
 
-    /** onFrameAvailable が最後に呼ばれた時間 */
-    private var latestUpdateTime = 0L
+    /** onFrameAvailable が呼ばれたら +1 していく */
+    private var latestUpdateCount = 0L
 
     /** カメラ用スレッド */
     private var cameraJob: Job? = null
@@ -134,7 +134,7 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
         // 更新を通知するため、値を更新する
-        latestUpdateTime = System.currentTimeMillis()
+        latestUpdateCount++
     }
 
     override fun onResume() {
@@ -193,7 +193,7 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
             } else {
                 // メソッド呼び出しには順番があります
                 val mediaRecorder = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this@MainActivity) else MediaRecorder()).apply {
-                    setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
+                    setAudioSource(MediaRecorder.AudioSource.MIC)
                     setVideoSource(MediaRecorder.VideoSource.SURFACE)
                     setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                     setVideoEncoder(MediaRecorder.VideoEncoder.H264)
@@ -206,6 +206,7 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
                     } else {
                         setVideoSize(CAMERA_RESOLTION_HEIGHT, CAMERA_RESOLTION_WIDTH)
                     }
+                    setAudioEncodingBitRate(128_000)
                     setAudioSamplingRate(44_100)
                     saveVideoFile = File(getExternalFilesDir(null), "${System.currentTimeMillis()}.mp4")
                     setOutputFile(saveVideoFile!!)
@@ -290,15 +291,15 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
             // ここで行う理由ですが、makeCurrent したスレッドでないと glDrawArray できない？ + onFrameAvailable が UIスレッド なので重たいことはできないためです。
             // ただ、レンダリングするタイミングは onFrameAvailable が更新されたタイミングなので、
             // while ループを回して 新しいフレームが来ているか確認しています。
-            var prevUpdateTime = 0L
+            var prevUpdateCount = 0L
             while (isActive) {
-                if (latestUpdateTime != prevUpdateTime) {
+                if (latestUpdateCount != prevUpdateCount) {
                     glSurfaceList.forEach {
                         it.makeCurrent() // 多分いる
                         it.drawFrame()
                         it.swapBuffers()
                     }
-                    prevUpdateTime = latestUpdateTime
+                    prevUpdateCount = latestUpdateCount
                 }
             }
         }
