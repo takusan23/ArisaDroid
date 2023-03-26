@@ -19,12 +19,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -37,9 +38,14 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
+
 
 class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListener {
 
@@ -54,21 +60,28 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
 
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         if (it.all { it.value }) {
-            setup()
+            // onResume で代替
+            // setup()
         }
     }
+
+    /** Surface を待つ */
+    private val availableSurfaceFlow = MutableStateFlow<Surface?>(null)
 
     /** 生成した [GLSurface] */
     private val glSurfaceList = arrayListOf<GLSurface>()
 
-    /** 利用中の [CameraItem] */
-    private val cameraItemList = arrayListOf<CameraItem>()
+    /** 利用中の [CameraControl] */
+    private val cameraControlList = arrayListOf<CameraControl>()
 
     /** 生成した [SurfaceTexture] */
     private val previewSurfaceTexture = arrayListOf<SurfaceTexture>()
 
     /** onFrameAvailable が呼ばれたら +1 していく */
-    private var latestUpdateCount = 0L
+    private var unUsedFrameCount = 0L
+
+    /** updateTexUpdate を呼んだら +1 していく */
+    private var usedFrameCount = 0L
 
     /** カメラ用スレッド */
     private var cameraJob: Job? = null
@@ -104,6 +117,13 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
 
         setContent {
+            val zoomValue = remember { mutableStateOf(1f) }
+            val zoomRange = remember { mutableStateOf(0f..1f) }
+            SideEffect {
+                // 非 Compose なコードので若干違和感
+                zoomRange.value = cameraControlList.firstOrNull()?.zoomRange ?: 0f..1f
+            }
+
             Box(
                 modifier = Modifier
                     .background(Color.Black)
@@ -120,21 +140,51 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
                                 CAMERA_RESOLTION_HEIGHT.toFloat() / CAMERA_RESOLTION_WIDTH.toFloat()
                             }
                         ),
-                    factory = { surfaceView }
+                    factory = {
+                        surfaceView.apply {
+                            holder.addCallback(object : SurfaceHolder.Callback {
+                                override fun surfaceCreated(holder: SurfaceHolder) {
+                                    availableSurfaceFlow.value = holder.surface
+                                }
+
+                                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                                    // do nothing
+                                }
+
+                                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                    // Surface破棄時はEGLも破棄
+                                    lifecycleScope.launch { cameraDestroy() }
+                                }
+                            })
+                        }
+                    }
                 )
-                Button(
+                Column(
                     modifier = Modifier
-                        .padding(bottom = 30.dp)
+                        .padding(bottom = 50.dp)
                         .align(Alignment.BottomCenter),
-                    onClick = { capture() }
-                ) { Text(text = "撮影 録画 する") }
+                ) {
+                    Slider(
+                        value = zoomValue.value,
+                        valueRange = zoomRange.value,
+                        onValueChange = {
+                            zoomValue.value = it
+                            // 前面カメラ は最初
+                            cameraControlList.first().zoom(it)
+                        }
+                    )
+                    Button(
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                        onClick = { capture() }
+                    ) { Text(text = "撮影 録画 する") }
+                }
             }
         }
     }
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
         // 更新を通知するため、値を更新する
-        latestUpdateCount++
+        unUsedFrameCount++
     }
 
     override fun onResume() {
@@ -165,8 +215,8 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
         imageReader?.close()
         glSurfaceList.forEach { it.release() }
         glSurfaceList.clear()
-        cameraItemList.forEach { it.destroy() }
-        cameraItemList.clear()
+        cameraControlList.forEach { it.destroy() }
+        cameraControlList.clear()
         if (isRecording) {
             mediaRecorder?.stop()
         }
@@ -177,7 +227,8 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
     private fun setup() {
         cameraJob = lifecycleScope.launch(Dispatchers.IO) {
             // SurfaceView を待つ
-            val previewSurface = waitSurface()
+            val previewSurface = availableSurfaceFlow.filterNotNull().first()
+            println("previewSurface")
             // 撮影モードに合わせた Surface を作る（静止画撮影、動画撮影）
             val captureSurface = if (currentCaptureMode == CameraCaptureMode.PICTURE) {
                 // 静止画撮影で利用する ImageReader
@@ -280,26 +331,28 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
 
             // カメラを開く
             val (backCameraId, frontCameraId) = CameraTool.getCameraId(this@MainActivity)
-            cameraItemList += CameraItem(this@MainActivity, backCameraId, Surface(mainSurfaceTexture[0]), Surface(mainSurfaceTexture[1]))
-            cameraItemList += CameraItem(this@MainActivity, frontCameraId, Surface(subSurfaceTexture[0]), Surface(subSurfaceTexture[1]))
-            cameraItemList.forEach { it.openCamera() }
+            cameraControlList += CameraControl(this@MainActivity, backCameraId, Surface(mainSurfaceTexture[0]), Surface(mainSurfaceTexture[1]))
+            cameraControlList += CameraControl(this@MainActivity, frontCameraId, Surface(subSurfaceTexture[0]), Surface(subSurfaceTexture[1]))
+            cameraControlList.forEach { it.openCamera() }
             // プレビューする
-            cameraItemList.forEach { it.startCamera() }
+            cameraControlList.forEach { it.startCamera() }
 
             // OpenGL のレンダリングを行う
             // isActive でこの cameraJob が終了されるまでループし続ける
             // ここで行う理由ですが、makeCurrent したスレッドでないと glDrawArray できない？ + onFrameAvailable が UIスレッド なので重たいことはできないためです。
             // ただ、レンダリングするタイミングは onFrameAvailable が更新されたタイミングなので、
             // while ループを回して 新しいフレームが来ているか確認しています。
-            var prevUpdateCount = 0L
             while (isActive) {
-                if (latestUpdateCount != prevUpdateCount) {
+                // OpenGL の描画よりも onFrameAvailable の更新のほうが早い？ため、更新が追いついてしまう
+                // そのため、消費したフレームとまだ消費していないフレームを比較するようにした
+                // https://stackoverflow.com/questions/14185661
+                if (unUsedFrameCount != usedFrameCount && isActive) {
                     glSurfaceList.forEach {
                         it.makeCurrent() // 多分いる
                         it.drawFrame()
                         it.swapBuffers()
                     }
-                    prevUpdateCount = latestUpdateCount
+                    usedFrameCount += 2 // メイン映像とサブ映像で2つ
                 }
             }
         }
@@ -321,8 +374,8 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
                         MediaStore.Video.Media.DISPLAY_NAME to saveVideoFile?.name,
                         MediaStore.Video.Media.RELATIVE_PATH to "${Environment.DIRECTORY_MOVIES}/ArisaDroid"
                     )
-                    contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues).also { uri ->
-                        contentResolver.openOutputStream(uri).use { outputStream ->
+                    contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)?.also { uri ->
+                        contentResolver.openOutputStream(uri)?.use { outputStream ->
                             saveVideoFile?.inputStream()?.use { inputStream ->
                                 inputStream.copyTo(outputStream)
                             }
@@ -363,32 +416,6 @@ class MainActivity : ComponentActivity(), SurfaceTexture.OnFrameAvailableListene
                 }
                 editBitmap.recycle()
                 image.close()
-            }
-        }
-    }
-
-    /** Surface の用意が終わるまで一時停止する */
-    private suspend fun waitSurface() = suspendCoroutine { continuation ->
-        surfaceView.holder.apply {
-            if (surface.isValid) {
-                continuation.resume(this.surface)
-            } else {
-                var callback: SurfaceHolder.Callback? = null
-                callback = object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) {
-                        continuation.resume(holder.surface)
-                        removeCallback(callback)
-                    }
-
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                        // do nothing
-                    }
-
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        // do nothing
-                    }
-                }
-                addCallback(callback)
             }
         }
     }
